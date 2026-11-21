@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "valenced-plugin build",
+    "generate-index": "valenced-plugin generate-index",
+    "plan-releases": "valenced-plugin plan-releases --plugins-dir plugins",
+    "serve": "valenced-plugin serve"
+  },
+  "workspaces": ["plugins/*"],
+  "dependencies": {
+    "@valenced/plugin-cli": "git+https://github.com/Valenced/valenced-plugin-cli.git",
+    "@valenced/types": "git+https://github.com/Valenced/valenced-types.git"
+  }
+}
