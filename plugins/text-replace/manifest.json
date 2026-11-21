@@ -9,7 +9,5 @@
     "valenced.api": { "version": ">=1" },
     "discord": { "version": "*" }
   },
-  "dist": {
-    "script": "index.js"
-  }
+  "dist": { "script": "index.js" }
 }
