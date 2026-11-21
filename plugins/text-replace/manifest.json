@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "id": "dev.lilbig.text-replace",
+  "name": "Text Replace",
+  "description": "Replace text, usernames and IDs in messages",
+  "author": "lilbig4dev",
+  "version": "1.0.0",
+  "dependencies": {
+    "valenced.api": { "version": ">=1" },
+    "discord": { "version": "*" }
+  },
+  "dist": {
+    "script": "index.js"
+  }
+}
