@@ -1,106 +1,76 @@
-name: Release
-
-on:
-  push:
-    tags:
-      - 'v*'
-
-permissions:
-  contents: write
-  pages: write
-  id-token: write
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Build plugins
-        run: bun --bun run build
-
-      - name: Zip plugins
-        run: |
-          mkdir -p dist
-          for dir in plugins/*/; do
-            id=$(jq -r '.id' "$dir/manifest.json")
-            version=$(jq -r '.version' "$dir/manifest.json")
-            cp plugins/$(basename $dir)/build/js/index.js /tmp/index.js 2>/dev/null || true
-            cp plugins/$(basename $dir)/manifest.json /tmp/manifest.json
-            cd /tmp && zip -j "index.js" "manifest.json" -r . -i "index.js" "manifest.json" 2>/dev/null || true
-            cd -
-            zip -j "dist/${id}@${version}.zip" \
-              "plugins/$(basename $dir)/build/js/index.js" \
-              "plugins/$(basename $dir)/manifest.json"
-          done
-
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.zip
-
-  index:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
       - name: Generate index.json
         run: |
           node -e "
+          const https = require('https');
+          const crypto = require('crypto');
           const fs = require('fs');
-          const path = require('path');
+
           const owner = process.env.GITHUB_REPOSITORY_OWNER;
           const repo = process.env.GITHUB_REPOSITORY.split('/')[1];
-          const baseUrl = \`https://github.com/\${owner}/\${repo}/releases/download\`;
           const tag = process.env.GITHUB_REF_NAME;
-          const plugins = {};
-          for (const dir of fs.readdirSync('plugins')) {
-            const mPath = \`plugins/\${dir}/manifest.json\`;
-            if (!fs.existsSync(mPath)) continue;
-            const m = JSON.parse(fs.readFileSync(mPath, 'utf8'));
-            plugins[m.id] = {
-              name: m.name,
-              description: m.description,
-              author: m.author,
-              channels: { latest: m.version },
-              versions: {
-                [m.version]: {
-                  url: \`\${baseUrl}/\${tag}/\${m.id}@\${m.version}.zip\`,
-                  sha256: 'pending',
-                  size: 0,
-                  dependencies: m.dependencies
+          const token = process.env.GITHUB_TOKEN;
+
+          function get(url, binary = false) {
+            return new Promise((res, rej) => {
+              const opts = {
+                headers: {
+                  'Authorization': 'Bearer ' + token,
+                  'User-Agent': 'index-gen',
+                  'Accept': binary ? 'application/octet-stream' : 'application/vnd.github+json'
                 }
-              }
-            };
+              };
+              https.get(url, opts, r => {
+                if (r.statusCode >= 300 && r.statusCode < 400)
+                  return get(r.headers.location, binary).then(res).catch(rej);
+                const c = [];
+                r.on('data', d => c.push(d));
+                r.on('end', () => res(binary ? Buffer.concat(c) : JSON.parse(Buffer.concat(c).toString())));
+                r.on('error', rej);
+              }).on('error', rej);
+            });
           }
-          const cfg = JSON.parse(fs.readFileSync('repo.config.json', 'utf8'));
-          fs.writeFileSync('index.json', JSON.stringify({ format: 1, name: cfg.name, plugins }, null, 2));
+
+          (async () => {
+            const release = await get('https://api.github.com/repos/' + owner + '/' + repo + '/releases/tags/' + tag);
+            const assets = release.assets;
+
+            const plugins = {};
+            for (const dir of fs.readdirSync('plugins')) {
+              const mPath = 'plugins/' + dir + '/manifest.json';
+              if (!fs.existsSync(mPath)) continue;
+              const m = JSON.parse(fs.readFileSync(mPath, 'utf8'));
+              const assetName = m.id + '@' + m.version + '.zip';
+              const asset = assets.find(a => a.name === assetName);
+              if (!asset) { console.error('No release asset for', assetName); process.exit(1); }
+
+              const bytes = await get(asset.browser_download_url, true);
+              const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+              const size = bytes.length;
+
+              plugins[m.id] = {
+                name: m.name,
+                description: m.description,
+                author: m.author,
+                channels: { latest: m.version },
+                versions: {
+                  [m.version]: {
+                    url: asset.browser_download_url,
+                    sha256,
+                    size,
+                    dependencies: m.dependencies
+                  }
+                }
+              };
+            }
+
+            const cfg = JSON.parse(fs.readFileSync('repo.config.json', 'utf8'));
+            const out = { format: 1, name: cfg.name, generated: new Date().toISOString(), plugins };
+            fs.writeFileSync('index.json', JSON.stringify(out, null, 2));
+            console.log('index.json written, plugins:', Object.keys(plugins));
+          })().catch(e => { console.error(e); process.exit(1); });
           "
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: .
-
-  deploy:
-    needs: index
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@v4
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
