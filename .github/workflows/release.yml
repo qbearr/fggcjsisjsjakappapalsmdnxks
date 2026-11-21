@@ -2,8 +2,8 @@ name: Release
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,33 +20,87 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Checkout pool
-        uses: actions/checkout@v4
-        with:
-          ref: gh-pages
-          path: published
-          fetch-depth: 0
-        continue-on-error: true
-
       - name: Install dependencies
         run: bun install
-
-      - name: Plan releases
-        run: |
-          mkdir -p published/pool
-          bun --bun run plan-releases -- --pool published/pool --out plan.json || true
 
       - name: Build plugins
         run: bun --bun run build
 
-      - name: Generate index
+      - name: Zip plugins
         run: |
-          bun --bun run generate-index -- --pool published/pool --out published/index.json \
-            --base-url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+          mkdir -p dist
+          for dir in plugins/*/; do
+            id=$(jq -r '.id' "$dir/manifest.json")
+            version=$(jq -r '.version' "$dir/manifest.json")
+            cp plugins/$(basename $dir)/build/js/index.js /tmp/index.js 2>/dev/null || true
+            cp plugins/$(basename $dir)/manifest.json /tmp/manifest.json
+            cd /tmp && zip -j "index.js" "manifest.json" -r . -i "index.js" "manifest.json" 2>/dev/null || true
+            cd -
+            zip -j "dist/${id}@${version}.zip" \
+              "plugins/$(basename $dir)/build/js/index.js" \
+              "plugins/$(basename $dir)/manifest.json"
+          done
 
-      - name: Deploy
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Release
+        uses: softprops/action-gh-release@v2
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: published
-          keep_files: true
+          files: dist/*.zip
+
+  index:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate index.json
+        run: |
+          node -e "
+          const fs = require('fs');
+          const path = require('path');
+          const owner = process.env.GITHUB_REPOSITORY_OWNER;
+          const repo = process.env.GITHUB_REPOSITORY.split('/')[1];
+          const baseUrl = \`https://github.com/\${owner}/\${repo}/releases/download\`;
+          const tag = process.env.GITHUB_REF_NAME;
+          const plugins = {};
+          for (const dir of fs.readdirSync('plugins')) {
+            const mPath = \`plugins/\${dir}/manifest.json\`;
+            if (!fs.existsSync(mPath)) continue;
+            const m = JSON.parse(fs.readFileSync(mPath, 'utf8'));
+            plugins[m.id] = {
+              name: m.name,
+              description: m.description,
+              author: m.author,
+              channels: { latest: m.version },
+              versions: {
+                [m.version]: {
+                  url: \`\${baseUrl}/\${tag}/\${m.id}@\${m.version}.zip\`,
+                  sha256: 'pending',
+                  size: 0,
+                  dependencies: m.dependencies
+                }
+              }
+            };
+          }
+          const cfg = JSON.parse(fs.readFileSync('repo.config.json', 'utf8'));
+          fs.writeFileSync('index.json', JSON.stringify({ format: 1, name: cfg.name, plugins }, null, 2));
+          "
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    needs: index
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
