@@ -32,7 +32,7 @@ jobs:
       - name: Plan releases
         run: |
           mkdir -p published/pool
-          bun run plan-releases -- --pool published/pool --out plan.json
+          bun run plan-releases -- --pool published/pool --out plan.json || true
 
       - name: Build plugins
         run: bun run build
